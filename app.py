@@ -1,14 +1,17 @@
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import torch
-import scipy.io.wavfile
-from transformers import AutoProcessor, MusicgenForConditionalGeneration
+from typing import Optional
 import base64
 import io
 
-app = FastAPI(title="Afzal AI Music Backend")
+app = FastAPI(
+    title="Afzal AI Music Backend",
+    version="3.0"
+)
 
+# Allow the Netlify website to connect to this backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,58 +20,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_NAME = "facebook/musicgen-small"
-processor = None
-model = None
+# 7 languages
+SUPPORTED_LANGUAGES = [
+    "Sindhi",
+    "Balochi",
+    "Urdu",
+    "Arabic",
+    "Punjabi",
+    "Marvadi",
+    "English",
+]
 
-class MusicRequest(BaseModel):
-    lyrics: str = ""
-    language: str = "Sindhi"
-    vocal_style: str = "Male Sufi"
-    music_style: str = "Sindhi Sufi Folk"
-    duration_seconds: int = 15
+SUPPORTED_VOCAL_STYLES = [
+    "Male Sufi",
+    "Female",
+    "Male + Female",
+    "Male Folk",
+    "Emotional Male",
+]
+
+class GenerateRequest(BaseModel):
+    lyrics: str
+    language: str
+    vocal_style: str
+    music_style: str
+    duration_seconds: Optional[int] = 20
 
 @app.get("/")
 def home():
-    return {"status": "ok", "service": "Afzal AI Music Backend"}
+    return {
+        "service": "Afzal AI Music Backend",
+        "status": "online",
+        "languages": SUPPORTED_LANGUAGES,
+        "vocal_styles": SUPPORTED_VOCAL_STYLES,
+        "note": "Music generation endpoint is ready. MusicGen generates instrumental audio; sung vocals require a separate singing/voice model or API."
+    }
+
+@app.get("/languages")
+def languages():
+    return {
+        "languages": SUPPORTED_LANGUAGES
+    }
 
 @app.post("/generate")
-def generate_music(request: MusicRequest):
-    global processor, model
-    try:
-        if processor is None or model is None:
-            processor = AutoProcessor.from_pretrained(MODEL_NAME)
-            model = MusicgenForConditionalGeneration.from_pretrained(MODEL_NAME)
-
-        duration = max(5, min(int(request.duration_seconds), 30))
-        prompt = (
-            f"{request.language} music, {request.vocal_style}, "
-            f"{request.music_style}. Create an instrumental musical arrangement "
-            f"inspired by these lyrics: {request.lyrics[:2000]}"
+def generate_music(request: GenerateRequest):
+    if request.language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported language. Choose one of: {', '.join(SUPPORTED_LANGUAGES)}"
         )
 
-        inputs = processor(text=[prompt], padding=True, return_tensors="pt")
-        max_new_tokens = int(duration * 50)
+    if request.vocal_style not in SUPPORTED_VOCAL_STYLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported vocal style. Choose one of: {', '.join(SUPPORTED_VOCAL_STYLES)}"
+        )
 
-        with torch.no_grad():
-            audio_values = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    if not request.lyrics.strip():
+        raise HTTPException(status_code=400, detail="Lyrics are required.")
 
-        audio = audio_values[0, 0].cpu().numpy()
-        sample_rate = model.config.audio_encoder.sampling_rate
-
-        wav_buffer = io.BytesIO()
-        scipy.io.wavfile.write(wav_buffer, rate=sample_rate, data=audio)
-        audio_base64 = base64.b64encode(wav_buffer.getvalue()).decode("utf-8")
-
-        return {
-            "success": True,
-            "format": "wav",
-            "audio_base64": audio_base64,
-            "note": "MusicGen currently creates instrumental music; singing vocals require a separate singing-voice model."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    # MusicGen is loaded only when generation is requested.
+    try
